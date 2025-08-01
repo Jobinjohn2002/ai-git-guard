@@ -10,7 +10,7 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    print("❌ Gemini API key not found in .env file.")
+    print("Gemini API key not found in .env file.")
     sys.exit(1)
 
 genai.configure(api_key=GEMINI_API_KEY)
