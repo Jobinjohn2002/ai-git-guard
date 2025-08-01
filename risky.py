@@ -1,1 +1,1 @@
-eval(input("Run:"))
+print("hello, this is AI")
