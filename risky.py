@@ -1,1 +1,1 @@
-eval(input("Running:"))
+eval(input("Run:"))
