@@ -1,0 +1,8 @@
+#!/bin/sh
+echo "  AI Git Guard - Scanning for vulnerabilities..."
+ai-git-guard scan
+RESULT=$?
+if [ $RESULT -ne 0 ]; then
+  echo "  [BLOCKED] Push blocked due to security risks found by AI."
+  exit 1
+fi
