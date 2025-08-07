@@ -36,13 +36,29 @@ def install():
     install_hook()
 
 @app.command()
+def uninstall():
+    """Remove or deactivate the AI Git Guard pre-push hook."""
+    hook_path = os.path.join(".git", "hooks", "pre-push")
+    
+    if not os.path.exists(hook_path):
+        print("No pre-push hook is currently installed.")
+        raise typer.Exit(code=0)
+    
+    try:
+        os.remove(hook_path)
+        print("[SUCCESS] Pre-push hook removed successfully.")
+    except Exception as e:
+        print(f"[ERROR] Failed to remove hook: {e}")
+        raise typer.Exit(code=1)
+
+@app.command()
 def scan():
     """Run AI security scan on committed code diff."""
     load_dotenv()
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
     if not GEMINI_API_KEY:
-        print("❌ Gemini API key not found in .env file.")
+        print(" Gemini API key not found in .env file.")
         raise typer.Exit(code=1)
 
     genai.configure(api_key=GEMINI_API_KEY)
@@ -50,7 +66,7 @@ def scan():
     diff = get_current_branch_diff()
 
     if not diff:
-        print("✅ No committed changes to analyze.")
+        print(" No committed changes to analyze.")
         raise typer.Exit(code=0)
 
     print("\n🔍 Running AI analysis on committed changes...\n")
@@ -70,7 +86,7 @@ def get_current_branch_diff():
     ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
     capture_output=True,
     text=True,
-    encoding="utf-8"  # ✅ ADD THIS
+    encoding="utf-8"
     )
     current_branch = result.stdout.strip()
 
@@ -100,34 +116,35 @@ def get_current_branch_diff():
 
 def analyze_diff_with_ai(diff: str) -> str:
     prompt = f"""
-You are a senior security code reviewer. A developer is trying to push the following committed code changes:
+You are a senior security reviewer. A developer is trying to push the following code changes:
 
 {diff}
 
 Your job is to:
 1. Identify security vulnerabilities (especially OWASP Top 10)
-2. Focus on:
-- Code injection (eval, exec)
-- Command injection (os.system, subprocess)
-- SQL injection (raw queries, string formatting)
-- Hardcoded credentials or API keys
-- Insecure deserialization
-- Dangerous file handling or permissions
-- XSS (for web)
-3. Provide a severity rating (Low, Medium, High)
-4. Output a structured result like:
+2. Focus ONLY on OWASP top 10 vulnerabilities such as the following critical issues:
+   - Code injection
+   - Command injection
+   - SQL injection (unparameterized queries)
+   - Hardcoded secrets or API keys
+   - Dangerous file operations (e.g., write to arbitrary paths, permission changes)
+   - Critical deserialization vulnerabilities
+
+Ignore minor issues like input length limits, minor validation gaps, or generic best practices unless they clearly lead to immediate risk.
+
+3. Provide a result using **only this exact format**:
 
 ---
-SEVERITY: High  
-STATUS: NEEDS REVIEW - Potential issues: [summary]  
+SEVERITY: [None | Low | Medium | High]  
+STATUS: [SAFE TO RELEASE | NEEDS REVIEW - Potential issues: (summary)]  
 DETAILS:
-- [explanation]
-- [file/line if possible]
+- [brief explanation of any found issues, with file/line if possible]
 SUGGESTIONS:
-- [fix or better practice]
+- [fix or safer approach]
 ---
 
-If no issues found, reply with:
+If no issue is found, return:
+
 ---
 SEVERITY: None  
 STATUS: SAFE TO RELEASE  
@@ -140,7 +157,7 @@ STATUS: SAFE TO RELEASE
         response = model.generate_content(prompt)
         result = getattr(response, "text", "").strip()
 
-        print("\n📄 AI Security Analysis Report:\n")
+        print("\n AI Security Analysis Report:\n")
         print(result)
         return result
     except Exception as e:
