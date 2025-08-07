@@ -53,13 +53,13 @@ def analyze_diff_with_ai(diff: str) -> str:
 def main():
     diff = get_staged_diff()
     if not diff:
-        print("✅ No staged changes to analyze.")
+        print("No staged changes to analyze.")
         return 0
 
     print("🔍 Running AI analysis on staged changes...")
     decision = analyze_diff_with_ai(diff)
 
-    print("\n📋 AI Response:\n" + decision)
+    print("\nAI Response:\n" + decision)
 
     if "SAFE TO RELEASE" in decision.upper():
         return 0
