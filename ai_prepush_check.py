@@ -56,7 +56,7 @@ def main():
         print("No staged changes to analyze.")
         return 0
 
-    print("🔍 Running AI analysis on staged changes...")
+    print("Running AI analysis on staged changes...")
     decision = analyze_diff_with_ai(diff)
 
     print("\nAI Response:\n" + decision)
