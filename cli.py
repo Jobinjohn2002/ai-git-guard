@@ -51,6 +51,49 @@ def uninstall():
         print(f"[ERROR] Failed to remove hook: {e}")
         raise typer.Exit(code=1)
 
+from datetime import datetime
+from openpyxl import Workbook, load_workbook
+import os
+
+def log_to_excel(ai_result: str):
+    """Append AI scan result to Excel log file."""
+    filename = "ai_git_guard_reports.xlsx"
+
+    # Create workbook if it doesn’t exist
+    if not os.path.exists(filename):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Reports"
+        ws.append(["Timestamp", "Severity", "Status", "Details", "Suggestions"])
+        wb.save(filename)
+
+    # Open existing workbook
+    wb = load_workbook(filename)
+    ws = wb.active
+
+    # Extract sections from AI result
+    severity, status, details, suggestions = "", "", "", ""
+    for line in ai_result.splitlines():
+        if line.startswith("SEVERITY:"):
+            severity = line.replace("SEVERITY:", "").strip()
+        elif line.startswith("STATUS:"):
+            status = line.replace("STATUS:", "").strip()
+        elif line.startswith("DETAILS:"):
+            details = line.replace("DETAILS:", "").strip()
+        elif line.startswith("SUGGESTIONS:"):
+            suggestions = line.replace("SUGGESTIONS:", "").strip()
+        elif line.startswith("- "):
+            if "DETAILS:" in prev_line:
+                details += " " + line.strip("- ").strip()
+            elif "SUGGESTIONS:" in prev_line:
+                suggestions += " " + line.strip("- ").strip()
+        prev_line = line
+
+    # Append row
+    ws.append([datetime.utcnow().isoformat(), severity, status, details, suggestions])
+    wb.save(filename)
+    print(f"📊 Logged blocked push report to {filename}")
+
 @app.command()
 def scan():
     """Run AI security scan on committed code diff."""
@@ -69,7 +112,7 @@ def scan():
         print(" No committed changes to analyze.")
         raise typer.Exit(code=0)
 
-    print("\n🔍 Running AI analysis on committed changes...\n")
+    print("\n Running AI analysis on committed changes...\n")
     result = analyze_diff_with_ai(diff)
 
     if "SAFE TO RELEASE" in result.upper():
@@ -77,6 +120,7 @@ def scan():
         raise typer.Exit(code=0)
     else:
         print("Push blocked due to security risks found by AI.")
+        log_to_excel(result)  # <-- log blocked report
         raise typer.Exit(code=1)
 
 
@@ -151,7 +195,7 @@ STATUS: SAFE TO RELEASE
 ---
 """
 
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.0-flash")
 
     try:
         response = model.generate_content(prompt)
