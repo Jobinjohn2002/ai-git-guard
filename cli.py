@@ -4,6 +4,10 @@ import subprocess
 import sys
 from dotenv import load_dotenv
 import google.generativeai as genai
+from datetime import datetime, timedelta
+from openpyxl import Workbook, load_workbook
+import os
+import subprocess
 
 app = typer.Typer(help="AI Git Guard CLI")
 
@@ -51,28 +55,36 @@ def uninstall():
         print(f"[ERROR] Failed to remove hook: {e}")
         raise typer.Exit(code=1)
 
-from datetime import datetime
-from openpyxl import Workbook, load_workbook
-import os
-
 def log_to_excel(ai_result: str):
-    """Append AI scan result to Excel log file."""
+    """Append AI scan result to Excel log file with GitHub username and IST timestamp."""
     filename = "ai_git_guard_reports.xlsx"
+
+    # Get GitHub username from git config
+    try:
+        github_username = subprocess.run(
+            ["git", "config", "user.name"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8"
+        ).stdout.strip() or "Unknown User"
+    except Exception:
+        github_username = "Unknown User"
 
     # Create workbook if it doesn’t exist
     if not os.path.exists(filename):
         wb = Workbook()
         ws = wb.active
         ws.title = "Reports"
-        ws.append(["Timestamp", "Severity", "Status", "Details", "Suggestions"])
+        ws.append(["User", "Timestamp (IST)", "Severity", "Status", "Details", "Suggestions"])
         wb.save(filename)
 
     # Open existing workbook
     wb = load_workbook(filename)
     ws = wb.active
 
-    # Extract sections from AI result
+    # Extract fields from AI result
     severity, status, details, suggestions = "", "", "", ""
+    prev_line = ""
     for line in ai_result.splitlines():
         if line.startswith("SEVERITY:"):
             severity = line.replace("SEVERITY:", "").strip()
@@ -89,10 +101,16 @@ def log_to_excel(ai_result: str):
                 suggestions += " " + line.strip("- ").strip()
         prev_line = line
 
-    # Append row
-    ws.append([datetime.utcnow().isoformat(), severity, status, details, suggestions])
+    # ✅ Get current time in IST (UTC + 5 hours 30 minutes)
+    ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    timestamp = ist_time.strftime("%Y-%m-%d %H:%M:%S IST")
+
+    # Append a new log entry
+    ws.append([github_username, timestamp, severity, status, details, suggestions])
     wb.save(filename)
-    print(f"📊 Logged blocked push report to {filename}")
+
+    print(f" Logged blocked push report to {filename}")
+    print(f" User: {github_username} | 🕒 {timestamp}")
 
 @app.command()
 def scan():
