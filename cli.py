@@ -39,21 +39,21 @@ def install():
     """Install the pre-push hook."""
     install_hook()
 
-@app.command()
-def uninstall():
-    """Remove or deactivate the AI Git Guard pre-push hook."""
-    hook_path = os.path.join(".git", "hooks", "pre-push")
+# @app.command()
+# def uninstall():
+#     """Remove or deactivate the AI Git Guard pre-push hook."""
+#     hook_path = os.path.join(".git", "hooks", "pre-push")
     
-    if not os.path.exists(hook_path):
-        print("No pre-push hook is currently installed.")
-        raise typer.Exit(code=0)
+#     if not os.path.exists(hook_path):
+#         print("No pre-push hook is currently installed.")
+#         raise typer.Exit(code=0)
     
-    try:
-        os.remove(hook_path)
-        print("[SUCCESS] Pre-push hook removed successfully.")
-    except Exception as e:
-        print(f"[ERROR] Failed to remove hook: {e}")
-        raise typer.Exit(code=1)
+#     try:
+#         os.remove(hook_path)
+#         print("[SUCCESS] Pre-push hook removed successfully.")
+#     except Exception as e:
+#         print(f"[ERROR] Failed to remove hook: {e}")
+#         raise typer.Exit(code=1)
 
 def log_to_excel(ai_result: str):
     """Append AI scan result to Excel log file with GitHub username and IST timestamp."""
