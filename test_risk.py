@@ -1,2 +1,2 @@
-user_inp= input("Enter something: ")
-print(user_inp)
+user_input= input("Enter something: ")
+print("user said : ",user_input)
