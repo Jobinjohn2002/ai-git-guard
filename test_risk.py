@@ -1,2 +1,2 @@
-user_input = input("Enter something: ")
-eval(user_input)
+user_inp= input("Enter something: ")
+print(user_inp)
