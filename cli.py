@@ -1,3 +1,4 @@
+import psycopg2
 import typer
 import os
 import subprocess
@@ -8,6 +9,8 @@ from datetime import datetime, timedelta
 from openpyxl import Workbook, load_workbook
 import os
 import subprocess
+import mysql.connector
+from mysql.connector import Error
 
 app = typer.Typer(help="AI Git Guard CLI")
 
@@ -39,78 +42,91 @@ def install():
     """Install the pre-push hook."""
     install_hook()
 
-# @app.command()
-# def uninstall():
-#     """Remove or deactivate the AI Git Guard pre-push hook."""
-#     hook_path = os.path.join(".git", "hooks", "pre-push")
-    
-#     if not os.path.exists(hook_path):
-#         print("No pre-push hook is currently installed.")
-#         raise typer.Exit(code=0)
-    
-#     try:
-#         os.remove(hook_path)
-#         print("[SUCCESS] Pre-push hook removed successfully.")
-#     except Exception as e:
-#         print(f"[ERROR] Failed to remove hook: {e}")
-#         raise typer.Exit(code=1)
-
-def log_to_excel(ai_result: str):
-    """Append AI scan result to Excel log file with GitHub username and IST timestamp."""
-    filename = "ai_git_guard_reports.xlsx"
-
-    # Get GitHub username from git config
+@app.command()
+def uninstall():
+    """Remove or deactivate the AI Git Guard pre-push hook."""
+    hook_path = os.path.join(".git", "hooks", "pre-push")
+    if not os.path.exists(hook_path):
+        print("No pre-push hook is currently installed.")
+        raise typer.Exit(code=0)
     try:
+        os.remove(hook_path)
+        print("[SUCCESS] Pre-push hook removed successfully.")
+    except Exception as e:
+        print(f"[ERROR] Failed to remove hook: {e}")
+        raise typer.Exit(code=1)
+
+def log_to_mysql(ai_result: str):
+    """Append AI scan result to a shared MySQL table with project and user info."""
+    try:
+        # MySQL connection
+        connection = mysql.connector.connect(
+            host="192.168.1.10",           # or your shared DB host
+            user="pmsuser",                # your DB username
+            password="Excel.123",   # your DB password
+            database="git_guard_db"  # your DB name
+        )
+        cursor = connection.cursor()
+        # Extract fields from AI result
+        severity, status, details, suggestions = "", "", "", ""
+        prev_line = ""
+        for line in ai_result.splitlines():
+            if line.startswith("SEVERITY:"):
+                severity = line.replace("SEVERITY:", "").strip()
+            elif line.startswith("STATUS:"):
+                status = line.replace("STATUS:", "").strip()
+            elif line.startswith("DETAILS:"):
+                details = line.replace("DETAILS:", "").strip()
+            elif line.startswith("SUGGESTIONS:"):
+                suggestions = line.replace("SUGGESTIONS:", "").strip()
+            elif line.startswith("- "):
+                if "DETAILS:" in prev_line:
+                    details += " " + line.strip("- ").strip()
+                elif "SUGGESTIONS:" in prev_line:
+                    suggestions += " " + line.strip("- ").strip()
+            prev_line = line
+            
+        # Get GitHub username
         github_username = subprocess.run(
             ["git", "config", "user.name"],
             capture_output=True,
-            text=True,
-            encoding="utf-8"
+            text=True
         ).stdout.strip() or "Unknown User"
-    except Exception:
-        github_username = "Unknown User"
 
-    # Create workbook if it doesn’t exist
-    if not os.path.exists(filename):
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Reports"
-        ws.append(["User", "Timestamp (IST)", "Severity", "Status", "Details", "Suggestions"])
-        wb.save(filename)
+        # Get project (repo) name
+        project_name = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True
+        ).stdout.strip().split("/")[-1] or "Unknown Project"
 
-    # Open existing workbook
-    wb = load_workbook(filename)
-    ws = wb.active
+        # Get current IST time
+        ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
 
-    # Extract fields from AI result
-    severity, status, details, suggestions = "", "", "", ""
-    prev_line = ""
-    for line in ai_result.splitlines():
-        if line.startswith("SEVERITY:"):
-            severity = line.replace("SEVERITY:", "").strip()
-        elif line.startswith("STATUS:"):
-            status = line.replace("STATUS:", "").strip()
-        elif line.startswith("DETAILS:"):
-            details = line.replace("DETAILS:", "").strip()
-        elif line.startswith("SUGGESTIONS:"):
-            suggestions = line.replace("SUGGESTIONS:", "").strip()
-        elif line.startswith("- "):
-            if "DETAILS:" in prev_line:
-                details += " " + line.strip("- ").strip()
-            elif "SUGGESTIONS:" in prev_line:
-                suggestions += " " + line.strip("- ").strip()
-        prev_line = line
+        # Insert into MySQL table
+        insert_query = """
+            INSERT INTO ai_git_guard_logs (project_name, user_name, timestamp, severity, status, details, suggestions)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+        cursor.execute(insert_query, (
+            project_name,
+            github_username,
+            ist_time,
+            severity,
+            status,
+            details,
+            suggestions
+        ))
+        connection.commit()
+        print(f"[DB] Log added for project '{project_name}' by {github_username}")
 
-    # ✅ Get current time in IST (UTC + 5 hours 30 minutes)
-    ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
-    timestamp = ist_time.strftime("%Y-%m-%d %H:%M:%S IST")
+    except Error as e:
+        print(f"[DB ERROR] Failed to insert log: {e}")
 
-    # Append a new log entry
-    ws.append([github_username, timestamp, severity, status, details, suggestions])
-    wb.save(filename)
-
-    print(f" Logged blocked push report to {filename}")
-    print(f" User: {github_username} | 🕒 {timestamp}")
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
 
 @app.command()
 def scan():
@@ -129,7 +145,6 @@ def scan():
     if not diff:
         print(" No committed changes to analyze.")
         raise typer.Exit(code=0)
-
     print("\n Running AI analysis on committed changes...\n")
     result = analyze_diff_with_ai(diff)
 
@@ -138,9 +153,8 @@ def scan():
         raise typer.Exit(code=0)
     else:
         print("Push blocked due to security risks found by AI.")
-        log_to_excel(result)  # <-- log blocked report
+        log_to_mysql(result)  # <-- logs in DB now
         raise typer.Exit(code=1)
-
 
 def get_current_branch_diff():
     # Get current branch
@@ -151,7 +165,6 @@ def get_current_branch_diff():
     encoding="utf-8"
     )
     current_branch = result.stdout.strip()
-
     # Get upstream branch
     upstream_result = subprocess.run(
         ['git', 'rev-parse', '--symbolic-full-name', '--abbrev-ref', f'{current_branch}@{{upstream}}'],
@@ -159,14 +172,11 @@ def get_current_branch_diff():
         text=True,
         encoding="utf-8"
     )
-
     if upstream_result.returncode != 0:
         print(f"⚠️ No upstream set for branch '{current_branch}'. Please set upstream with:")
         print(f"   git push --set-upstream origin {current_branch}")
         return ""
-
     upstream = upstream_result.stdout.strip()
-
     # Get diff between current branch and upstream
     diff_result = subprocess.run(
         ['git', 'diff', f'{upstream}...{current_branch}', '--unified=0'],
@@ -179,7 +189,6 @@ def get_current_branch_diff():
 def analyze_diff_with_ai(diff: str) -> str:
     prompt = f"""
 You are a senior security reviewer. A developer is trying to push the following code changes:
-
 {diff}
 
 Your job is to:
