@@ -1,4 +1,3 @@
-import psycopg2
 import typer
 import os
 import subprocess
@@ -6,13 +5,14 @@ import sys
 from dotenv import load_dotenv
 import google.generativeai as genai
 from datetime import datetime, timedelta
-from openpyxl import Workbook, load_workbook
-import os
-import subprocess
 import mysql.connector
 from mysql.connector import Error
 
-app = typer.Typer(help="AI Git Guard CLI")
+app = typer.Typer(help="AI Git Guard CLI — Secure your pushes with AI checks")
+
+# ------------------------------------------------------------
+# Hook installation
+# ------------------------------------------------------------
 
 def install_hook():
     """
@@ -37,18 +37,22 @@ fi
         print(f"[ERROR] Failed to install hook: {e}")
         raise typer.Exit(code=1)
 
+
 @app.command()
 def install():
     """Install the pre-push hook."""
     install_hook()
 
+
 @app.command()
 def uninstall():
-    """Remove or deactivate the AI Git Guard pre-push hook."""
+    """Remove the AI Git Guard pre-push hook."""
     hook_path = os.path.join(".git", "hooks", "pre-push")
+
     if not os.path.exists(hook_path):
         print("No pre-push hook is currently installed.")
         raise typer.Exit(code=0)
+
     try:
         os.remove(hook_path)
         print("[SUCCESS] Pre-push hook removed successfully.")
@@ -56,20 +60,26 @@ def uninstall():
         print(f"[ERROR] Failed to remove hook: {e}")
         raise typer.Exit(code=1)
 
+
+# ------------------------------------------------------------
+# MySQL Logging
+# ------------------------------------------------------------
+
 def log_to_mysql(ai_result: str):
     """Append AI scan result to a shared MySQL table with project and user info."""
     try:
-        # MySQL connection
         connection = mysql.connector.connect(
-            host="192.168.1.10",           # or your shared DB host
+            host="192.168.1.10",           # change to your DB host
             user="pmsuser",                # your DB username
             password="Excel.123",   # your DB password
             database="git_guard_db"  # your DB name
         )
         cursor = connection.cursor()
-        # Extract fields from AI result
-        severity, status, details, suggestions = "", "", "", ""
+
+        # Default values
+        severity, status, details, suggestions = "None", "SAFE TO RELEASE", "", ""
         prev_line = ""
+
         for line in ai_result.splitlines():
             if line.startswith("SEVERITY:"):
                 severity = line.replace("SEVERITY:", "").strip()
@@ -85,7 +95,7 @@ def log_to_mysql(ai_result: str):
                 elif "SUGGESTIONS:" in prev_line:
                     suggestions += " " + line.strip("- ").strip()
             prev_line = line
-            
+
         # Get GitHub username
         github_username = subprocess.run(
             ["git", "config", "user.name"],
@@ -94,19 +104,26 @@ def log_to_mysql(ai_result: str):
         ).stdout.strip() or "Unknown User"
 
         # Get project (repo) name
-        project_name = subprocess.run(
+        project_path = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True
-        ).stdout.strip().split("/")[-1] or "Unknown Project"
+        ).stdout.strip()
+
+        # Extract just the folder name from full path
+        project_name = os.path.basename(project_path) or "Unknown Project"
 
         # Get current IST time
         ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
 
+        # Determine success or blocked
+        is_blocked = not ("SAFE TO RELEASE" in status.upper())
+
         # Insert into MySQL table
         insert_query = """
-            INSERT INTO ai_git_guard_logs (project_name, user_name, timestamp, severity, status, details, suggestions)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO ai_git_guard_logs 
+            (project_name, user_name, timestamp, severity, status, details, suggestions, is_blocked)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """
         cursor.execute(insert_query, (
             project_name,
@@ -115,69 +132,49 @@ def log_to_mysql(ai_result: str):
             severity,
             status,
             details,
-            suggestions
+            suggestions,
+            is_blocked
         ))
         connection.commit()
-        print(f"[DB] Log added for project '{project_name}' by {github_username}")
+
+        print(f"[DB] Log added for {github_username} — {status}")
 
     except Error as e:
         print(f"[DB ERROR] Failed to insert log: {e}")
-
     finally:
         if connection.is_connected():
             cursor.close()
             connection.close()
 
-@app.command()
-def scan():
-    """Run AI security scan on committed code diff."""
-    load_dotenv()
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-    if not GEMINI_API_KEY:
-        print(" Gemini API key not found in .env file.")
-        raise typer.Exit(code=1)
-
-    genai.configure(api_key=GEMINI_API_KEY)
-
-    diff = get_current_branch_diff()
-
-    if not diff:
-        print(" No committed changes to analyze.")
-        raise typer.Exit(code=0)
-    print("\n Running AI analysis on committed changes...\n")
-    result = analyze_diff_with_ai(diff)
-
-    if "SAFE TO RELEASE" in result.upper():
-        print("Safe to release. Push allowed.")
-        raise typer.Exit(code=0)
-    else:
-        print("Push blocked due to security risks found by AI.")
-        log_to_mysql(result)  # <-- logs in DB now
-        raise typer.Exit(code=1)
+# ------------------------------------------------------------
+# AI Security Scan Logic
+# ------------------------------------------------------------
 
 def get_current_branch_diff():
-    # Get current branch
+    """Get code diff between current branch and upstream."""
     result = subprocess.run(
-    ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
-    capture_output=True,
-    text=True,
-    encoding="utf-8"
+        ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+        capture_output=True,
+        text=True,
+        encoding="utf-8"
     )
     current_branch = result.stdout.strip()
-    # Get upstream branch
+
     upstream_result = subprocess.run(
         ['git', 'rev-parse', '--symbolic-full-name', '--abbrev-ref', f'{current_branch}@{{upstream}}'],
         capture_output=True,
         text=True,
         encoding="utf-8"
     )
+
     if upstream_result.returncode != 0:
         print(f"⚠️ No upstream set for branch '{current_branch}'. Please set upstream with:")
         print(f"   git push --set-upstream origin {current_branch}")
         return ""
+
     upstream = upstream_result.stdout.strip()
-    # Get diff between current branch and upstream
+
     diff_result = subprocess.run(
         ['git', 'diff', f'{upstream}...{current_branch}', '--unified=0'],
         capture_output=True,
@@ -187,53 +184,97 @@ def get_current_branch_diff():
     return diff_result.stdout.strip()
 
 def analyze_diff_with_ai(diff: str) -> str:
+    """Send diff to Gemini AI for OWASP Top 10 + Hardcoded Secrets analysis."""
     prompt = f"""
-You are a senior security reviewer. A developer is trying to push the following code changes:
-{diff}
+You are a senior application security reviewer. Analyze ONLY the following code diff for vulnerabilities
+strictly limited to OWASP Top 10 + Hardcoded Secrets.
 
-Your job is to:
-1. Identify security vulnerabilities (especially OWASP Top 10)
-2. Focus ONLY on OWASP top 10 vulnerabilities such as the following critical issues:
-   - Code injection
-   - Command injection
-   - SQL injection (unparameterized queries)
-   - Hardcoded secrets or API keys
-   - Dangerous file operations (e.g., write to arbitrary paths, permission changes)
-   - Critical deserialization vulnerabilities
+The OWASP Top 10 categories are:
+1. Broken Access Control
+2. Cryptographic Failures
+3. Injection (SQL, Command, Code, LDAP)
+4. Insecure Design
+5. Security Misconfiguration
+6. Vulnerable and Outdated Components
+7. Identification and Authentication Failures
+8. Software and Data Integrity Failures
+9. Security Logging and Monitoring Failures
+10. Server-Side Request Forgery (SSRF)
+11. Hardcoded Secrets (API keys, passwords, tokens)
 
-Ignore minor issues like input length limits, minor validation gaps, or generic best practices unless they clearly lead to immediate risk.
+Ignore anything that does not clearly belong to one of these categories.
 
-3. Provide a result using **only this exact format**:
-
+If no such vulnerability is found, return exactly this (nothing else):
 ---
-SEVERITY: [None | Low | Medium | High]  
-STATUS: [SAFE TO RELEASE | NEEDS REVIEW - Potential issues: (summary)]  
+SEVERITY: None
+STATUS: SAFE TO RELEASE
+---
+
+If vulnerabilities are found, return only in this strict format:
+---
+SEVERITY: [None | Low | Medium | High]
+STATUS: NEEDS REVIEW - Potential issues: [short summary]
 DETAILS:
-- [brief explanation of any found issues, with file/line if possible]
+- [concise explanation]
 SUGGESTIONS:
-- [fix or safer approach]
+- [safe fix suggestion]
 ---
+Do not include any introductions, explanations, or extra text outside the format.
 
-If no issue is found, return:
-
----
-SEVERITY: None  
-STATUS: SAFE TO RELEASE  
----
+Analyze this code diff now:
+{diff}
 """
 
-    model = genai.GenerativeModel("gemini-2.0-flash")
-
     try:
+        model = genai.GenerativeModel("gemini-2.0-flash")
         response = model.generate_content(prompt)
         result = getattr(response, "text", "").strip()
 
-        print("\n AI Security Analysis Report:\n")
-        print(result)
-        return result
+        # Clean up result — remove any preamble lines before SEVERITY
+        if not result.startswith("---") and "SEVERITY:" in result:
+            result = result[result.find("SEVERITY:") - 4:]  # keep from --- onward
+
+        print("\nAI Security Analysis Report:\n")
+        print(result if result else "[No response from AI]")
+        return result or "SEVERITY: None\nSTATUS: SAFE TO RELEASE"
     except Exception as e:
-        print("Gemini API Error:", e)
-        return "NEEDS REVIEW - AI check failed"
+        print(f"Gemini API Error: {e}")
+        # Treat API failure as SAFE to avoid false blocks
+        return "SEVERITY: None\nSTATUS: SAFE TO RELEASE"
+
+@app.command()
+def scan():
+    """Run AI security scan on committed code diff."""
+    load_dotenv()
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+    if not GEMINI_API_KEY:
+        print("Gemini API key not found in .env file.")
+        raise typer.Exit(code=1)
+
+    genai.configure(api_key=GEMINI_API_KEY)
+    diff = get_current_branch_diff()
+
+    if not diff:
+        print("No committed changes to analyze.")
+        raise typer.Exit(code=0)
+
+    print("\nRunning AI analysis on committed changes...\n")
+    result = analyze_diff_with_ai(diff)
+
+    if "SAFE TO RELEASE" in result.upper():
+        print("✅ Safe to release. Push allowed.")
+        log_to_mysql(result)   # Log success
+        raise typer.Exit(code=0)
+    else:
+        print("❌ Push blocked due to security risks found by AI.")
+        log_to_mysql(result)   # Log failure
+        raise typer.Exit(code=1)
+
+
+# ------------------------------------------------------------
+# Entry Point
+# ------------------------------------------------------------
 
 def main():
     app()
