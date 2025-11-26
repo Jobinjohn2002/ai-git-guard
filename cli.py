@@ -5,8 +5,10 @@ import sys
 from dotenv import load_dotenv
 import google.generativeai as genai
 from datetime import datetime, timedelta
-import mysql.connector
-from mysql.connector import Error
+# import mysql.connector
+# from mysql.connector import Error
+import pymysql
+
 
 app = typer.Typer(help="AI Git Guard CLI — Secure your pushes with AI checks")
 
@@ -49,16 +51,22 @@ def install():
 
 def log_to_mysql(ai_result: str):
     """Append AI scan result to a shared MySQL table with project and user info."""
+    connection = None
+
     try:
-        connection = mysql.connector.connect(
-            host="192.168.1.10",           # change to your DB host
-            user="pmsuser",                # your DB username
-            password="Excel.123",   # your DB password
-            database="git_guard_db"  # your DB name
+        connection = pymysql.connect(
+            host=os.getenv("DB_HOST"),
+            port=int(os.getenv("DB_PORT")),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            database=os.getenv("DB_NAME"),
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.Cursor
         )
+
+
         cursor = connection.cursor()
 
-        # Default values
         severity, status, details, suggestions = "None", "SAFE TO RELEASE", "", ""
         prev_line = ""
 
@@ -73,61 +81,45 @@ def log_to_mysql(ai_result: str):
                 suggestions = line.replace("SUGGESTIONS:", "").strip()
             elif line.startswith("- "):
                 if "DETAILS:" in prev_line:
-                    details += " " + line.strip("- ").strip()
+                    details += " " + line.lstrip("- ").strip()
                 elif "SUGGESTIONS:" in prev_line:
-                    suggestions += " " + line.strip("- ").strip()
+                    suggestions += " " + line.lstrip("- ").strip()
             prev_line = line
 
-        # Get GitHub username
-        github_username = subprocess.run(
-            ["git", "config", "user.name"],
-            capture_output=True,
-            text=True
-        ).stdout.strip() or "Unknown User"
+        github_username = (
+            subprocess.run(["git", "config", "user.name"], capture_output=True, text=True)
+            .stdout.strip()
+            or "Unknown User"
+        )
 
-        # Get project (repo) name
         project_path = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True
         ).stdout.strip()
 
-        # Extract just the folder name from full path
         project_name = os.path.basename(project_path) or "Unknown Project"
-
-        # Get current IST time
         ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
-
-        # Determine success or blocked
         is_blocked = not ("SAFE TO RELEASE" in status.upper())
 
-        # Insert into MySQL table
-        insert_query = """
+        cursor.execute("""
             INSERT INTO ai_git_guard_logs 
             (project_name, user_name, timestamp, severity, status, details, suggestions, is_blocked)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """
-        cursor.execute(insert_query, (
-            project_name,
-            github_username,
-            ist_time,
-            severity,
-            status,
-            details,
-            suggestions,
-            is_blocked
+        """, (
+            project_name, github_username, ist_time,
+            severity, status, details, suggestions, is_blocked
         ))
+
         connection.commit()
+        print(f"[DB] Log saved for {github_username}")
 
-        print(f"[DB] Log added for {github_username} — {status}")
+    except Exception as e:
+        print(f"[DB ERROR] {e}")
 
-    except Error as e:
-        print(f"[DB ERROR] Failed to insert log: {e}")
     finally:
-        if connection.is_connected():
-            cursor.close()
+        if connection:
             connection.close()
-
 
 # ------------------------------------------------------------
 # AI Security Scan Logic

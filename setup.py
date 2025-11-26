@@ -11,6 +11,7 @@ setup(
         "colorama",
         "python-dotenv",
         "google-generativeai",
+        "pymysql"
     ],
     entry_points={
         "console_scripts": [
